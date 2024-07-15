@@ -233,29 +233,19 @@ func genCoverVars(cfg *importcfg, dir string) (string, error) {
 			continue
 		}
 
-		id, err := buildid(file)
-		if err != nil {
-			return "", err
-		}
-		id, _, _ = strings.Cut(id, "/")
-
-		f, err := os.Open(filepath.Join(cacheDir, id))
-		if err != nil {
-			return "", fmt.Errorf("no cache info for %q: %w", pkg, err)
-		}
-		scanner := bufio.NewScanner(f)
-		var lastLine string
-		for scanner.Scan() {
-			line := scanner.Text()
-
-			if line == "--" && scanner.Scan() {
-				lastLine = scanner.Text()
-				break
+		var errs []error
+		if err := eachCacheLine(cacheDir, file, func(id, line string, last bool) {
+			if last {
+				// assume the first packagefile in importcfg.link is the main
+				if pkg == cfg.firstPkg {
+					main = line
+				}
+				return
 			}
 
 			block, suffix, found := strings.Cut(line, " ")
 			if !found {
-				return "", fmt.Errorf("invalid cache line for %s: %q", pkg, line)
+				errs = append(errs, fmt.Errorf("invalid cache line for %s: %q", pkg, line))
 			}
 
 			init.WriteRune('\t')
@@ -269,23 +259,39 @@ func genCoverVars(cfg *importcfg, dir string) (string, error) {
 			fmt.Fprintf(vars, "var _%s uint8\n", cv)
 			fmt.Fprintf(vars, "//go:linkname %s %s.%s\n", cv, coverPkgPath, cv)
 			fmt.Fprintf(vars, "func %s() { _%s = 1 } // %s\n\n", cv, cv, block)
+		}); err != nil {
+			return "", fmt.Errorf("cache read error for %q: %w", pkg, err)
 		}
-
-		// assume the first packagefile in importcfg.link is the main
-		if pkg == cfg.firstPkg {
-			main = lastLine
+		if len(errs) > 0 {
+			return "", fmt.Errorf("cache read error for %q: %w", pkg, errors.Join(errs...))
 		}
-
-		f.Close()
-	}
-	if main == "" {
-		return "", fmt.Errorf("couldn't find main package %q in build", cfg.firstPkg)
 	}
 
 	init.WriteString("}")
-
 	vars.Flush()
 	init.Flush()
+
+	// probably means main was not selected for coverage instrumentation, so we
+	// need to search for it in importcfg.link ourselves.
+	if main == "" {
+		for pkg, file := range cfg.pkg {
+			if pkg != cfg.firstPkg {
+				continue
+			}
+			if err := eachCacheLine(cacheDir, file, func(id, line string, last bool) {
+				if !last {
+					return
+				}
+				main = line
+			}); err != nil {
+				return "", fmt.Errorf("cache read error for %q: %w", pkg, err)
+			}
+		}
+	}
+
+	if main == "" {
+		return "", fmt.Errorf("couldn't find main package %q in build", cfg.firstPkg)
+	}
 
 	return main, nil
 }
@@ -389,4 +395,31 @@ func (cfg *importcfg) WriteTo(w io.Writer) (int64, error) {
 
 	err := buf.Flush()
 	return N, err
+}
+
+func eachCacheLine(cacheDir, export string, fn func(id, line string, last bool)) error {
+	id, err := buildid(export)
+	if err != nil {
+		return err
+	}
+	id, _, _ = strings.Cut(id, "/")
+
+	f, err := os.Open(filepath.Join(cacheDir, id))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "--" && scanner.Scan() {
+			fn(id, scanner.Text(), true)
+			break
+		}
+
+		fn(id, line, false)
+	}
+
+	return nil
 }

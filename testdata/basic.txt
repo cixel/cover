@@ -1,3 +1,5 @@
+env GOCACHE=$WORK/go-cache
+
 go run -toolexec cover .
 go tool cover -func=cover.out
 cmp stdout expect-func.out
@@ -13,13 +15,30 @@ rm cover.out
 
 env COVER_PATHS=test/main,test/main/pkg
 go run -toolexec cover .
-go tool cover -func=cover.out
 grep 'test/main/pkg/pkg.go:4.2,4.18 1 1' cover.out
+rm cover.out
+
+env COVER_PATHS=test/main,os
+go run -toolexec cover .
+grep 'test/main' cover.out
+grep 'os' cover.out
+rm cover.out
+
+env COVER_PATHS=does/not/exist,os
+go run -toolexec cover .
+exists cover.out
+grep 'os' cover.out
+! grep 'test/main' cover.out
+rm cover.out
+
+env COVER_PATHS=does/not/exist
+go run -toolexec cover .
+exists cover.out
+! grep '1' cover.out
 rm cover.out
 
 [short] skip
 env COVER_PATHS=*
-env GOCACHE=$WORK/go-cache
 go run -toolexec cover -work .
 go tool cover -func=cover.out
 grep 'runtime' cover.out
