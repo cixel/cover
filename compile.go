@@ -1,23 +1,20 @@
 package main
 
-// TODO configurable packages in env vars raises a small problem for
-//	buildID/version - should I bake the env var's value into the buildid?
-
 // TODO add //line directive to tops of files
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
-func compile(tool string, args []string) ([]string, error) {
+func compile(coverPaths []string, tool string, args []string) ([]string, error) {
 	importPath := os.Getenv("TOOLEXEC_IMPORTPATH")
 	_, buildid := getFlag(args, "buildid")
 	_, pkg := getFlag(args, "p")
@@ -25,18 +22,25 @@ func compile(tool string, args []string) ([]string, error) {
 	workDir := filepath.Dir(out)
 	actionID, _, _ := strings.Cut(buildid, "/")
 
-	if importPath == coverPkgPath {
-		return fixCoverVarsPkg(args, workDir)
+	if linkPath := os.Getenv(coverImportcfg); linkPath != "" && importPath == coverPkgPath {
+		return fixImportCfg(args, linkPath, workDir)
 	}
 
-	if importPath != "ehden.net/fizzbuzz" {
-		// if importPath != "ehden.net/fizzbuzz" && importPath != "fmt" {
+	instrument := slices.Contains(coverPaths, "*") || slices.Contains(coverPaths, importPath)
+	instrument = instrument || (len(coverPaths) == 0 && pkg == "main")
+	// we need to our "exit hook" to main, even if we're not meant to
+	// instrument it for coverage
+	if !instrument && pkg != "main" {
 		return args, nil
 	}
 
 	cacheDir, err := cacheDir()
 	if err != nil {
-		return args, nil
+		return args, err
+	}
+
+	if err := os.MkdirAll(cacheDir, 0777); err != nil {
+		return args, err
 	}
 
 	cacheFilePath := filepath.Join(cacheDir, actionID)
@@ -57,8 +61,8 @@ func compile(tool string, args []string) ([]string, error) {
 	}
 	defer coverFile.Close()
 	covervars := bufio.NewWriter(coverFile)
-	fmt.Fprintf(covervars, "package %s\n\n", pkg)
-	covervars.WriteString("import _ \"unsafe\"\n\n")
+	fmt.Fprintf(covervars, "package %s\n\n", filepath.Base(pkg))
+	fmt.Fprint(covervars, "import _ \"unsafe\"\n\n")
 
 	_, files := goFiles(args)
 	fset := token.NewFileSet()
@@ -76,25 +80,23 @@ func compile(tool string, args []string) ([]string, error) {
 		f := &file{
 			buf:        newBuffer(contents),
 			fset:       fset,
-			pkg:        pkg,
 			importPath: importPath,
 			syntax:     parsed,
 		}
-		ast.Walk(f, parsed)
 
-		// TODO there may be a better way to get this so that i don't need to
-		// have both f.pkg and f.importpath
-		if f.pkg == "main" {
+		if instrument {
+			ast.Walk(f, parsed)
+		}
+
+		if pkg == "main" {
 			f.addMainInit()
 		}
 
 		for _, b := range f.blocks {
-			cv := b.coverVar()
 			ce := b.cacheEntry()
+			fmt.Fprintln(cache, ce)
 
-			cache.WriteString(ce)
-			cache.WriteRune('\n')
-
+			cv := b.coverVar()
 			fmt.Fprintf(covervars, "//go:linkname %s %s.%s_%s\n", cv, coverPkgPath, cv, cleanIDPart(actionID))
 			fmt.Fprintf(covervars, "func %s() // %s\n\n", cv, ce)
 		}
@@ -107,15 +109,7 @@ func compile(tool string, args []string) ([]string, error) {
 		files[i] = outPath
 	}
 
-	// TODO: i might need to generate the package here and have it imported by
-	// main to get around the relocation target errors i'm seeing. not sure how
-	// I'll know about all the packages in the build here though, since I won't
-	// have the linker's importcfg.
-	//
-	// XXX: maybe have the linker recompile main? main saves its args in a file
-	// in the cacheDir and link recompiles it w/ updated importcfg
 	if pkg == "main" {
-		// // TODO replace occurrence of the generated pkg in strings w/ const
 		fmt.Fprintf(covervars, "//go:linkname _WriteCoverage %s.WriteCoverage\n", coverPkgPath)
 		fmt.Fprint(covervars, "func _WriteCoverage()\n")
 	}
@@ -136,11 +130,20 @@ func compile(tool string, args []string) ([]string, error) {
 	return args, nil
 }
 
-func fixCoverVarsPkg(args []string, workDir string) ([]string, error) {
-	linkPath := os.Getenv(coverImportcfg)
-	if linkPath == "" {
-		return args, errors.New("couldn't find linker importcfg")
+func coverPkgs() []string {
+	v := os.Getenv(coverPathsVar)
+	if len(v) == 0 {
+		return nil
 	}
+	pkgs := strings.Split(v, ",")
+	for i, p := range pkgs {
+		pkgs[i] = strings.TrimSpace(p)
+	}
+	slices.Sort(pkgs)
+	return pkgs
+}
+
+func fixImportCfg(args []string, linkPath, workDir string) ([]string, error) {
 	linkCfg, err := readImportCfg(linkPath)
 	if err != nil {
 		return args, fmt.Errorf("couldn't read linker importcfg: %w", err)
@@ -193,10 +196,10 @@ func (b block) cacheEntry() string {
 }
 
 type file struct {
-	buf             *buffer
-	fset            *token.FileSet
-	pkg, importPath string
-	syntax          *ast.File
+	buf        *buffer
+	fset       *token.FileSet
+	importPath string
+	syntax     *ast.File
 
 	blocks []block
 }

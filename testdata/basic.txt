@@ -1,0 +1,52 @@
+go run -toolexec cover .
+go tool cover -func=cover.out
+cmp stdout expect-func.out
+cmp cover.out expect-cover.out
+rm cover.out
+
+env COVER_PATHS=test/main
+go run -toolexec cover .
+go tool cover -func=cover.out
+cmp stdout expect-func.out
+cmp cover.out expect-cover.out
+rm cover.out
+
+env COVER_PATHS=test/main,test/main/pkg
+go run -toolexec cover .
+go tool cover -func=cover.out
+grep 'test/main/pkg/pkg.go:4.2,4.18 1 1' cover.out
+rm cover.out
+
+[short] skip
+env COVER_PATHS=*
+env GOCACHE=$WORK/go-cache
+go run -toolexec cover -work .
+go tool cover -func=cover.out
+grep 'runtime' cover.out
+grep 'unicode/utf8' cover.out
+grep 'io/fs' cover.out
+rm cover.out
+
+-- go.mod --
+module test/main
+-- main.go --
+package main
+
+import _ "os"
+import "test/main/pkg"
+
+func main() {
+	pkg.Export()
+}
+-- pkg/pkg.go --
+package pkg
+
+func Export() {
+	println("hello")
+}
+-- expect-cover.out --
+mode: set
+test/main/main.go:7.2,7.14 1 1
+-- expect-func.out --
+test/main/main.go:6:	main		100.0%
+total:			(statements)	100.0%

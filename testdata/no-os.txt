@@ -1,0 +1,17 @@
+[skip] TODO: handle importcfg patching when os package is missing
+
+go run -toolexec cover .
+go tool cover -func=cover.out
+cmp cover.out expect-cover.out
+
+-- go.mod --
+module test/main
+-- main.go --
+package main
+
+func main() {
+	var _ = 1
+}
+-- expect-cover.out --
+mode: set
+test/main/main.go:7.2,7.14 1 1

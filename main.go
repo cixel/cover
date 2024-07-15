@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,13 +11,28 @@ import (
 	"strings"
 )
 
+const coverPathsVar = "COVER_PATHS"
+
 func main() {
+	os.Exit(main1())
+}
+
+type errJustExit int
+
+func (e errJustExit) Error() string {
+	return "exit: " + fmt.Sprint(int(e))
+}
+
+func main1() int {
 	tool, args := os.Args[1], os.Args[2:]
 
 	args, err := toolexec(tool, args...)
 	if err != nil {
+		if code, ok := err.(errJustExit); ok {
+			return int(code)
+		}
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	cmd := exec.Command(tool, args...)
@@ -23,27 +40,38 @@ func main() {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+
+	return 0
 }
 
-func printVersion(tool string, args ...string) {
-	id, err := myBuildID()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+// printVersion prints the version of the underlying tool to stdout, along with
+// a hash combining our own tool version (buildID) and the sorted list of
+// packages we're configured to instrument.
+func printVersion(tool string, coverPaths []string, args ...string) error {
 	cmd := exec.Command(tool, args...)
 	stdout := bytes.NewBuffer(nil)
 	cmd.Stdout = stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
 	v := strings.TrimSpace(stdout.String())
-	fmt.Fprintf(os.Stdout, "%s +cover %s", v, id)
+	h := sha256.New()
+
+	id, err := myBuildID()
+	if err != nil {
+		return err
+	}
+	h.Write([]byte(id))
+	sum := h.Sum([]byte(strings.Join(coverPaths, "")))
+	b := base64.RawURLEncoding.EncodeToString(sum)
+	if _, err := fmt.Fprintf(os.Stdout, "%s +cover %s\n", v, b); err != nil {
+		return err
+	}
+	return nil
 }
 
 func toolexec(tool string, args ...string) ([]string, error) {
@@ -52,14 +80,18 @@ func toolexec(tool string, args ...string) ([]string, error) {
 		return args, nil
 	}
 
+	pkgs := coverPkgs()
+
 	if len(args) > 0 && args[0] == "-V=full" {
-		printVersion(tool, args...)
-		os.Exit(0)
+		if err := printVersion(tool, pkgs, args...); err != nil {
+			return args, err
+		}
+		return args, errJustExit(0)
 	}
 
 	switch toolName {
 	case "compile":
-		return compile(tool, args)
+		return compile(pkgs, tool, args)
 	case "link":
 		return link(args)
 	}

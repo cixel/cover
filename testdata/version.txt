@@ -1,0 +1,44 @@
+# set up fake tools
+go build -o compile .
+cp compile link
+cp compile asm
+
+# test version output
+cover ./compile -V=full
+cp stdout compile.out
+
+cover ./link -V=full
+cmp stdout compile.out
+
+cover ./asm -V=full
+! cmp stdout compile.out
+
+env COVER_PATHS="test"
+cover ./compile -V=full
+cp stdout compile-test.out
+! cmp compile-test.out compile.out
+
+env COVER_PATHS="*"
+cover ./compile -V=full
+! cmp stdout compile-test.out
+
+! cover ./compile -V=full panic
+stderr 'exit status 1'
+
+-- go.mod --
+module test/main
+-- version.go --
+package main
+
+import "fmt"
+import "os"
+
+func main() {
+	if os.Args[1] == "-V=full" {
+		fmt.Fprint(os.Stdout, "1.0.0\n")
+	}
+
+	if len(os.Args) > 2 {
+		os.Exit(1)
+	}
+}

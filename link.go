@@ -9,16 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
-
-// TODO: likely need to trimpath the injected pkg
-
-// TODO: double check there are no fingerprinting errors with same version of
-// cover tool but different packages being used by main
-
-// TODO should grab the buildid executable from the dir that os.Args[1] is in
-// so I know I'm using the right toolchain
 
 const (
 	coverImportcfg = "COVER_IMPORTCFG"
@@ -78,9 +71,10 @@ func link(args []string) ([]string, error) {
 	if err != nil {
 		return args, err
 	}
+
 	list := exec.Command("go", "list", "-toolexec", exe, "-trimpath", "-export", "-f", "{{ .Export }}", "-work")
 	list.Dir = coverDir
-	// list.Stderr = os.Stderr
+	list.Stderr = os.Stderr
 	list.Env = append(list.Environ(),
 		// This lets us reference the linker's importcfg when compiling the vars
 		// package.
@@ -217,12 +211,28 @@ func genCoverVars(cfg *importcfg, dir string) (string, error) {
 	vars.WriteString("package covervars\n\n")
 	vars.WriteString("import _ \"unsafe\"\n\n")
 
+	pkgs := coverPkgs()
+	if slices.Contains(pkgs, "*") {
+		pkgs = make([]string, 0, len(cfg.pkg))
+		for p := range cfg.pkg {
+			pkgs = append(pkgs, p)
+		}
+	} else if len(pkgs) == 0 {
+		for pkg := range cfg.pkg {
+			if pkg == cfg.firstPkg {
+				pkgs = append(pkgs, pkg)
+				break
+			}
+		}
+	}
+
 	var main string
-	for pkg, file := range cfg.pkg {
-		// if pkg != "ehden.net/fizzbuzz" && pkg != "fmt" {
-		if pkg != "ehden.net/fizzbuzz" {
+	for _, pkg := range pkgs {
+		file, ok := cfg.pkg[pkg]
+		if !ok {
 			continue
 		}
+
 		id, err := buildid(file)
 		if err != nil {
 			return "", err
@@ -231,7 +241,7 @@ func genCoverVars(cfg *importcfg, dir string) (string, error) {
 
 		f, err := os.Open(filepath.Join(cacheDir, id))
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("no cache info for %q: %w", pkg, err)
 		}
 		scanner := bufio.NewScanner(f)
 		var lastLine string
@@ -268,6 +278,10 @@ func genCoverVars(cfg *importcfg, dir string) (string, error) {
 
 		f.Close()
 	}
+	if main == "" {
+		return "", fmt.Errorf("couldn't find main package %q in build", cfg.firstPkg)
+	}
+
 	init.WriteString("}")
 
 	vars.Flush()
