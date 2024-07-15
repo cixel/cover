@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ func compile(coverPaths []string, tool string, args []string) ([]string, error) 
 	_, buildid := getFlag(args, "buildid")
 	_, pkg := getFlag(args, "p")
 	_, out := getFlag(args, "o")
+	cfgPathIDx, cfgPath := getFlag(args, "importcfg")
 	workDir := filepath.Dir(out)
 	actionID, _, _ := strings.Cut(buildid, "/")
 
@@ -55,6 +57,19 @@ func compile(coverPaths []string, tool string, args []string) ([]string, error) 
 	cache := bufio.NewWriter(cacheFile)
 
 	coverFilePath := filepath.Join(workDir, "_covervars.go")
+	// because the linker re-compiles main, we don't want to keep the files we
+	// generate for the compiler in $WORK or we risk having them no longer
+	// exist on subsequent builds where the main pkg is cached.
+	if pkg == "main" {
+		coverFilePath = cacheFilePath + "-main"
+		if err := os.MkdirAll(coverFilePath, 0777); err != nil {
+			return args, err
+		}
+		if err := copyDir(coverFilePath, workDir); err != nil {
+			return args, err
+		}
+		coverFilePath = filepath.Join(coverFilePath, "_covervars.go")
+	}
 	coverFile, err := os.Create(coverFilePath)
 	if err != nil {
 		return args, err
@@ -103,6 +118,12 @@ func compile(coverPaths []string, tool string, args []string) ([]string, error) 
 
 		new := f.buf.bytes()
 		outPath := filepath.Join(workDir, "cover."+filepath.Base(path))
+		// again, we can't store files meant for the compiler inside $WORK or
+		// we risk subsequent (cached) builds failing when we go to recompile
+		// during linking.
+		if pkg == "main" {
+			outPath = filepath.Join(filepath.Dir(coverFilePath), filepath.Base(outPath))
+		}
 		if err := os.WriteFile(outPath, new, 0666); err != nil {
 			return nil, err
 		}
@@ -112,6 +133,9 @@ func compile(coverPaths []string, tool string, args []string) ([]string, error) 
 	if pkg == "main" {
 		fmt.Fprintf(covervars, "//go:linkname _WriteCoverage %s.WriteCoverage\n", coverPkgPath)
 		fmt.Fprint(covervars, "func _WriteCoverage()\n")
+
+		cfgPath = strings.Replace(cfgPath, workDir, filepath.Dir(coverFilePath), 1)
+		args[cfgPathIDx] = cfgPath
 	}
 
 	args = append(args, coverFilePath)
@@ -323,4 +347,41 @@ func (f *file) addMainInit() {
 		return
 	}
 	f.insert(main.Body.Lbrace+1, `defer _WriteCoverage();`)
+}
+
+func copyDir(dst, src string) error {
+	files, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0777); err != nil {
+		return err
+	}
+	for _, file := range files {
+		srcPath := filepath.Join(src, file.Name())
+		dstPath := filepath.Join(dst, file.Name())
+		if file.IsDir() {
+			if err := copyDir(dstPath, srcPath); err != nil {
+				return err
+			}
+			continue
+		}
+		if !file.Type().IsRegular() {
+			continue
+		}
+		w, err := os.Create(dstPath)
+		if err != nil {
+			return err
+		}
+		defer w.Close()
+		r, err := os.Open(srcPath)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		if _, err := io.Copy(w, r); err != nil {
+			return err
+		}
+	}
+	return nil
 }

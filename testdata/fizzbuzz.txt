@@ -1,0 +1,97 @@
+env GOCACHE=$WORK/go-cache
+
+go run -toolexec cover -work . 1
+cmp cover.out expect-run-1.out
+
+go run -toolexec cover . 3
+cmp cover.out expect-run-3.out
+
+go run -toolexec cover . 5
+cmp cover.out expect-run-5.out
+
+go run -toolexec cover . 15
+cmp cover.out expect-run-15.out
+
+go run -toolexec cover . -5
+cmp cover.out expect-run--5.out
+
+-- go.mod --
+module test/main
+-- fizzbuzz.go --
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+)
+
+func main() {
+	n, err := strconv.Atoi(os.Args[1])
+	if err != nil {
+		log.Fatal("🤬")
+	}
+
+	for i := 1; i <= n; i++ {
+		fmt.Println(fizzbuzz(i))
+	}
+}
+
+func fizzbuzz(n int) string {
+	switch {
+	case n%15 == 0:
+		return "fizzbuzz"
+	case n%5 == 0:
+		return "buzz"
+	case n%3 == 0:
+		return "fizz"
+	default:
+		return strconv.Itoa(n)
+	}
+}
+-- expect-run-1.out --
+mode: set
+test/main/fizzbuzz.go:11.2,11.36 1 1
+test/main/fizzbuzz.go:13.3,13.20 1 0
+test/main/fizzbuzz.go:17.3,17.27 1 1
+test/main/fizzbuzz.go:24.3,24.20 1 0
+test/main/fizzbuzz.go:26.3,26.16 1 0
+test/main/fizzbuzz.go:28.3,28.16 1 0
+test/main/fizzbuzz.go:30.3,30.25 1 1
+-- expect-run-3.out --
+mode: set
+test/main/fizzbuzz.go:11.2,11.36 1 1
+test/main/fizzbuzz.go:13.3,13.20 1 0
+test/main/fizzbuzz.go:17.3,17.27 1 1
+test/main/fizzbuzz.go:24.3,24.20 1 0
+test/main/fizzbuzz.go:26.3,26.16 1 0
+test/main/fizzbuzz.go:28.3,28.16 1 1
+test/main/fizzbuzz.go:30.3,30.25 1 1
+-- expect-run-5.out --
+mode: set
+test/main/fizzbuzz.go:11.2,11.36 1 1
+test/main/fizzbuzz.go:13.3,13.20 1 0
+test/main/fizzbuzz.go:17.3,17.27 1 1
+test/main/fizzbuzz.go:24.3,24.20 1 0
+test/main/fizzbuzz.go:26.3,26.16 1 1
+test/main/fizzbuzz.go:28.3,28.16 1 1
+test/main/fizzbuzz.go:30.3,30.25 1 1
+-- expect-run-15.out --
+mode: set
+test/main/fizzbuzz.go:11.2,11.36 1 1
+test/main/fizzbuzz.go:13.3,13.20 1 0
+test/main/fizzbuzz.go:17.3,17.27 1 1
+test/main/fizzbuzz.go:24.3,24.20 1 1
+test/main/fizzbuzz.go:26.3,26.16 1 1
+test/main/fizzbuzz.go:28.3,28.16 1 1
+test/main/fizzbuzz.go:30.3,30.25 1 1
+-- expect-run--5.out --
+mode: set
+test/main/fizzbuzz.go:11.2,11.36 1 1
+test/main/fizzbuzz.go:13.3,13.20 1 0
+test/main/fizzbuzz.go:17.3,17.27 1 0
+test/main/fizzbuzz.go:24.3,24.20 1 0
+test/main/fizzbuzz.go:26.3,26.16 1 0
+test/main/fizzbuzz.go:28.3,28.16 1 0
+test/main/fizzbuzz.go:30.3,30.25 1 0

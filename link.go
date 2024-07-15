@@ -88,7 +88,7 @@ func link(args []string) ([]string, error) {
 		return args, err
 	}
 
-	mainExport, err := rebuildMain(mainArgs, string(varsExport))
+	mainExport, err := rebuildMain(filepath.Dir(cfgPath), mainArgs, string(varsExport))
 	if err != nil {
 		return args, err
 	}
@@ -115,11 +115,10 @@ const mainInitDotGo = `package main
 import _ "ehden.net/cover/vars"
 `
 
-func rebuildMain(args, covervars string) (string, error) {
+func rebuildMain(workDir, args, covervars string) (string, error) {
 	argv := strings.Split(args, " ")
 
 	oIdx, o := getFlag(argv, "o")
-	workDir := filepath.Dir(o)
 	out := filepath.Join(workDir, "cover"+filepath.Base(o))
 	argv[oIdx] = out
 
@@ -150,7 +149,10 @@ func rebuildMain(args, covervars string) (string, error) {
 	cmd.Dir = workDir
 	// cmd.Stderr = os.Stderr // FIXME
 	if err := cmd.Run(); err != nil {
-		return "", nil
+		if e, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("rebuild failed (%w): %s", err, e.Stderr)
+		}
+		return "", err
 	}
 
 	return out, nil

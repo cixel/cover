@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rogpeppe/go-internal/gotooltest"
@@ -24,7 +25,7 @@ func TestScript(t *testing.T) {
 		UpdateScripts: *update,
 		Cmds:          map[string]func(ts *testscript.TestScript, neg bool, args []string){},
 		Setup: func(env *testscript.Env) error {
-			env.Setenv("HOME", "./home")
+			env.Setenv("HOME", filepath.Join(env.WorkDir, "home"))
 			return nil
 		},
 	}
