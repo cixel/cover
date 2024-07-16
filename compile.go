@@ -20,11 +20,11 @@ func compile(coverPaths []string, tool string, args []string) ([]string, error) 
 	_, buildid := getFlag(args, "buildid")
 	_, pkg := getFlag(args, "p")
 	_, out := getFlag(args, "o")
-	cfgPathIDx, cfgPath := getFlag(args, "importcfg")
 	workDir := filepath.Dir(out)
+	cfgPathIDx, cfgPath := getFlag(args, "importcfg")
 	actionID, _, _ := strings.Cut(buildid, "/")
 
-	if linkPath := os.Getenv(coverImportcfg); linkPath != "" && importPath == coverPkgPath {
+	if linkPath := os.Getenv(coverImportcfg); linkPath != "" {
 		return fixImportCfg(args, linkPath, workDir)
 	}
 
@@ -179,7 +179,13 @@ func fixImportCfg(args []string, linkPath, workDir string) ([]string, error) {
 		return args, err
 	}
 
-	cfg.pkg["os"] = linkCfg.pkg["os"]
+	for pkg := range cfg.pkg {
+		orig, ok := linkCfg.pkg[pkg]
+		if ok {
+			cfg.pkg[pkg] = orig
+		}
+	}
+
 	newPath := filepath.Join(workDir, "importcfg.cover")
 	new, err := os.Create(newPath)
 	if err != nil {

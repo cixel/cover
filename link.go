@@ -28,25 +28,22 @@ const (
 // Because we don't have the build flags go was originally invoked with, we
 // can't ensure we build the vars package with all the same flags. This isn't a
 // problem for the vars package itself (it's never imported anywhere, only
-// linked to), but it is a problem if the original program never imports os,
-// since it's a dependency of the vars package.
+// linked to), but it is a problem if the original program never imports os or
+// bufio, since these are dependencies of the vars package.
 //
-// To avoid fingerprint mismatches, we error out if we can't find os in the
-// linker's importcfg. If we can, toolexec swaps the os package in
-// ehden.net/cover/var's importcfg file to use the one built earlier.
-//
-// In the future, it may be an interesting exercise to build os ourselves. This
-// is tricky because we'll need to touch up all importcfg files during
-// compilation of all of os's dependencies which are not already in the build.
+// To get around this, we use toolexec when building the generated package,
+// with an env var containing the path of the linker's importcfg. When this env
+// var is set, our only action during 'compile' is to update the current
+// package's importcfg so that entries which exist in link's importcfg are used
+// whenever possible. This lets us avoid fingerprint mismatches without knowing
+// anything about the original build command because the only packages we'll
+// use from our build are the ones which were not a part of the build to begin
+// with.
 func link(args []string) ([]string, error) {
 	cfgIdx, cfgPath := getFlag(args, "importcfg")
 	cfg, err := readImportCfg(cfgPath)
 	if err != nil {
 		return args, err
-	}
-
-	if _, ok := cfg.pkg["os"]; !ok {
-		return args, errors.New("os package not found in build. add it with 'import _ \"os\"'")
 	}
 
 	coverDir := filepath.Join(filepath.Dir(cfgPath), "coverpkg")
@@ -61,7 +58,6 @@ func link(args []string) ([]string, error) {
 
 	// FIXME: this should probably use the version of Go that link belongs to,
 	// not whatever is first in PATH.
-	// TODO pull this out
 	mod := exec.Command("go", "mod", "init", coverPkgPath)
 	mod.Dir = coverDir
 	if err := mod.Run(); err != nil {
@@ -72,9 +68,26 @@ func link(args []string) ([]string, error) {
 		return args, err
 	}
 
-	list := exec.Command("go", "list", "-toolexec", exe, "-trimpath", "-export", "-f", "{{ .Export }}", "-work")
+	list := exec.Command("go", "list",
+		// Needed for importcfg patching; see fixImportCfg.
+		"-toolexec", exe,
+		// Doesn't do much, but we want to avoid the tmp dir mattering.
+		"-trimpath",
+		// Export tells go to actually build the package, and give us export
+		// file paths.
+		"-export",
+		// This just helps debugging.
+		"-work",
+		// Print the export file and importpath as they'd kind of appear in an
+		// importcfg file...
+		"-f", "packagefile {{ .ImportPath }}={{ .Export }}",
+		// ... for all packages in the build.
+		"-deps",
+	)
+	genCfg := new(importcfg)
 	list.Dir = coverDir
 	list.Stderr = os.Stderr
+	list.Stdout = genCfg
 	list.Env = append(list.Environ(),
 		// This lets us reference the linker's importcfg when compiling the vars
 		// package.
@@ -83,19 +96,28 @@ func link(args []string) ([]string, error) {
 		// work dir.
 		"GOTMPDIR="+filepath.Join(coverDir, "tmp"),
 	)
-	varsExport, err := list.Output()
-	if err != nil {
+	if err := list.Run(); err != nil {
 		return args, err
 	}
+	delete(genCfg.pkg, "unsafe") // fake
 
-	mainExport, err := rebuildMain(filepath.Dir(cfgPath), mainArgs, string(varsExport))
+	genExport := genCfg.pkg[coverPkgPath]
+	mainExport, err := rebuildMain(filepath.Dir(cfgPath), mainArgs, genExport)
 	if err != nil {
 		return args, err
 	}
 	args[len(args)-1] = mainExport
 
+	// replace main in importcfg to point at the new main
 	cfg.pkg[cfg.firstPkg] = strings.TrimSpace(string(mainExport))
-	cfg.pkg[coverPkgPath] = strings.TrimSpace(string(varsExport))
+	// merge importcfg for the generated package into the linker's importcfg,
+	// favoring originals; only missing entries are added.
+	for pkg, file := range genCfg.pkg {
+		if _, ok := cfg.pkg[pkg]; ok {
+			continue
+		}
+		cfg.pkg[pkg] = file
+	}
 	newImportCfg := filepath.Join(filepath.Dir(cfgPath), "importcfg.cover.link")
 	out, err := os.Create(newImportCfg)
 	if err != nil {
@@ -146,13 +168,11 @@ func rebuildMain(workDir, args, covervars string) (string, error) {
 	argv[cfgIdx] = newCfgPath
 
 	cmd := exec.Command(argv[0], argv[1:]...)
+	stderr := bytes.NewBuffer(nil)
 	cmd.Dir = workDir
-	// cmd.Stderr = os.Stderr // FIXME
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
-		if e, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("rebuild failed (%w): %s", err, e.Stderr)
-		}
-		return "", err
+		return "", fmt.Errorf("rebuild failed (%w): %s", err, stderr)
 	}
 
 	return out, nil
@@ -161,14 +181,15 @@ func rebuildMain(workDir, args, covervars string) (string, error) {
 const writeDotGo = `package covervars
 
 import (
+	"bufio"
 	"os"
 )
 
-func stringFor(i uint8) string {
+func runeFor(i uint8) rune {
 	if i == 1 {
-		return "1"
+		return '1'
 	}
-	return "0"
+	return '0'
 }
 
 func WriteCoverage() {
@@ -181,10 +202,10 @@ func WriteCoverage() {
 		println("ehden.net/fizzbuzz: could not emit coverage data:", err)
 	}
 	defer f.Close()
-
 	println("[ehden.net/cover] printing coverage profile to", outPath)
-
-	f.WriteString("mode: set\n")
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+	w.WriteString("mode: set\n")
 `
 
 // generates the covervars package. returns the compile command used to build
@@ -250,12 +271,9 @@ func genCoverVars(cfg *importcfg, dir string) (string, error) {
 				errs = append(errs, fmt.Errorf("invalid cache line for %s: %q", pkg, line))
 			}
 
-			init.WriteRune('\t')
-			fmt.Fprintf(init,
-				`f.WriteString(%q + " 1 " + stringFor(_cover_%s_%s) + "\n")`,
-				block, suffix, cleanIDPart(id),
-			)
-			init.WriteRune('\n')
+			fmt.Fprintf(init, "\tw.WriteString(%q)\n", block+" 1 ")
+			fmt.Fprintf(init, "\tw.WriteRune(runeFor(_cover_%s_%s))\n", suffix, cleanIDPart(id))
+			fmt.Fprintf(init, "\tw.WriteRune('\\n')\n")
 
 			cv := fmt.Sprintf("cover_%s_%s", suffix, cleanIDPart(id))
 			fmt.Fprintf(vars, "var _%s uint8\n", cv)
@@ -305,8 +323,12 @@ func readImportCfg(path string) (*importcfg, error) {
 	}
 	defer f.Close()
 
+	return readImportCfgFrom(f)
+}
+
+func readImportCfgFrom(r io.Reader) (*importcfg, error) {
 	cfg := new(importcfg)
-	if _, err := io.Copy(cfg, f); err != nil {
+	if _, err := io.Copy(cfg, r); err != nil {
 		return nil, err
 	}
 	return cfg, nil

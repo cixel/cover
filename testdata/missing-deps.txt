@@ -1,6 +1,4 @@
-skip 'TODO: handle importcfg patching when os package is missing'
-
-go run -toolexec cover .
+go run -toolexec cover -work .
 go tool cover -func=cover.out
 cmp cover.out expect-cover.out
 
@@ -14,4 +12,4 @@ func main() {
 }
 -- expect-cover.out --
 mode: set
-test/main/main.go:7.2,7.14 1 1
+test/main/main.go:4.2,4.11 1 1
